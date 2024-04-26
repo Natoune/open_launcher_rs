@@ -91,6 +91,21 @@ pub(crate) async fn sort_libs(
             },
             _ => base_url,
         };
+        let url = format!("{}{}", base_url, get_lib_path(name));
+        let url = match library {
+            Value::Object(library) => match library.get("downloads") {
+                Some(downloads) => match downloads.get("artifact") {
+                    Some(artifact) => match artifact.get("url") {
+                        Some(url) => url.as_str().unwrap().to_string(),
+                        None => url,
+                    },
+                    None => url,
+                },
+                None => url,
+            },
+            Value::String(_) => url,
+            _ => url,
+        };
         let hash = match library {
             Value::Object(library) => match library.get("downloads") {
                 Some(downloads) => match downloads.get("artifact") {
@@ -111,7 +126,7 @@ pub(crate) async fn sort_libs(
         if !path.exists() && allowed_rule(library) {
             libraries_vec.push(serde_json::json!({
                 "name": name,
-                "url": format!("{}{}", base_url, get_lib_path(name)),
+                "url": url,
                 "hash": hash,
                 "path": path.to_str().unwrap(),
             }));
@@ -146,65 +161,6 @@ pub(crate) async fn download_libs(
 
     Ok(progress.clone())
 }
-
-/*async fn process_natives(
-    progress: &mut events::Progress,
-    progress_sender: broadcast::Sender<events::Progress>,
-    natives: &Vec<Value>,
-    natives_dir: &std::path::Path,
-) -> Result<events::Progress, Box<dyn Error + Send + Sync>> {
-    for library in natives {
-        let library = library.as_object().unwrap();
-        let name = library["name"].as_str().unwrap();
-        let classifiers = library["downloads"].get("classifiers");
-
-        if classifiers.is_none() {
-            continue;
-        }
-
-        let classifiers = classifiers.unwrap().as_object().unwrap();
-        let natives = classifiers.get(&("natives-".to_string() + get_os().as_str()));
-
-        if natives.is_none() {
-            continue;
-        }
-
-        let natives = natives.unwrap().as_object().unwrap();
-        let hash = natives["sha1"].as_str().unwrap();
-        let parts: Vec<&str> = name.split(':').collect();
-        let artifact = parts[1];
-        let version = parts[2];
-        let path = natives_dir.join(
-            &format!(
-                "{}-{}-natives-{}.jar",
-                artifact,
-                version,
-                get_os().replace("windows", "win")
-            )
-            .replace("linux", "nix"),
-        );
-
-        if !path.exists() {
-            fs::create_dir_all(path.parent().unwrap()).await?;
-
-            let url = natives["url"].as_str().unwrap();
-            try_download_file(url, &path, hash, 3).await?;
-
-            *progress = events::Progress {
-                task: "downloading_natives".to_string(),
-                file: name.to_string(),
-                total: progress.total,
-                current: progress.current + 1,
-            };
-            let _ = progress_sender.send(progress.clone());
-
-            // Extract natives jar
-            extract_all(&path, &natives_dir).await?;
-        }
-    }
-
-    Ok(progress.clone())
-}*/
 
 pub(crate) fn sort_natives(natives: &Vec<Value>, natives_dir: &std::path::Path) -> Vec<Value> {
     let mut natives_vec = vec![];
