@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    error::Error,
     path::PathBuf,
     process::{Child, Command},
 };
@@ -357,12 +358,12 @@ impl Launcher {
 
     /// Get the command to launch the game.
     /// # Returns
-    /// * `Result<Command, Box<dyn std::error::Error>>` - The command to launch the game.
+    /// * `Result<Command, Box<dyn std::error::Error + Send + Sync>>` - The command to launch the game.
     /// # Example
     /// ```
     /// let command = launcher.command().unwrap();
     /// ```
-    pub fn command(&mut self) -> Result<Command, Box<dyn std::error::Error>> {
+    pub fn command(&mut self) -> Result<Command, Box<dyn Error + Send + Sync>> {
         if self.version.profile.is_null() {
             return Err("Please install a version before launching".into());
         }
@@ -664,8 +665,8 @@ impl Launcher {
 
     /// Launch the game.
     /// # Returns
-    /// * `Result<Child, Box<dyn std::error::Error>>` - The child process of the game.
-    pub fn launch(&mut self) -> Result<Child, Box<dyn std::error::Error>> {
+    /// * `Result<Child, Box<dyn std::error::Error + Send + Sync>>` - The child process of the game.
+    pub fn launch(&mut self) -> Result<Child, Box<dyn Error + Send + Sync>> {
         let mut command: Command = self.command()?;
         Ok(command.spawn().unwrap())
     }

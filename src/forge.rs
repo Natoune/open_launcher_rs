@@ -7,6 +7,7 @@ use serde_json::{Map, Value};
 use sha1::Digest;
 use std::{
     collections::HashMap,
+    error::Error,
     fs,
     io::{BufRead, Read},
     path::PathBuf,
@@ -95,7 +96,7 @@ pub(crate) async fn post_process(
     java_executable: &PathBuf,
     install_profile: &Value,
     progress_sender: broadcast::Sender<events::Progress>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn Error + Send + Sync>> {
     let data = install_profile["data"].as_object().unwrap();
     let processors = install_profile["processors"].as_array().unwrap();
 

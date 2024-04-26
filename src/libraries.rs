@@ -319,7 +319,7 @@ pub(crate) fn get_libraries_classpath(
 
 impl Launcher {
     /// Install libraries for the current version
-    pub async fn install_libraries(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn install_libraries(&mut self) -> Result<(), Box<dyn Error + Send + Sync>> {
         if self.version.profile.is_null() {
             return Err("Please install a version before installing libraries".into());
         }
