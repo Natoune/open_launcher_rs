@@ -204,15 +204,6 @@ impl InternalVersion {
 impl Launcher {
     /// Install the selected version
     pub fn install_version(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        if &self.version.loader == "vanilla" {
-            println!("Installing Minecraft version {}", self.version.id);
-        } else {
-            println!(
-                "Installing Minecraft version {} with loader {} {}",
-                self.version.id, self.version.loader, self.version.loader_version
-            );
-        }
-
         fs::create_dir_all(self.game_dir.join("versions").join(&self.version.id))?;
 
         // Download version json

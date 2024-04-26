@@ -10,8 +10,6 @@ impl Launcher {
             return Err("Please install a version before installing assets".into());
         }
 
-        println!("Checking assets");
-
         let assets_dir = self.game_dir.join("assets");
         let indexes_dir = assets_dir.join("indexes");
         let objects_dir = assets_dir.join("objects");
@@ -25,8 +23,6 @@ impl Launcher {
         ));
 
         if !index_path.exists() {
-            println!("Downloading asset index");
-
             let index_url = self.version.profile["assetIndex"]["url"].as_str().unwrap();
             let index_data = reqwest::blocking::get(index_url)?.text()?;
             fs::write(&index_path, index_data)?;
@@ -47,7 +43,6 @@ impl Launcher {
                     .any(|object| object["hash"].as_str().unwrap() == hash)
                     || format!("{:x}", sha1::Sha1::digest(&fs::read(&path)?)) != hash
                 {
-                    println!("Removing outdated asset {}", hash);
                     fs::remove_file(&path)?;
                 }
             }
@@ -60,8 +55,6 @@ impl Launcher {
             let object_path = objects_dir.join(&hash[..2]).join(hash);
 
             if !object_path.exists() {
-                println!("Downloading assets/{}", name);
-
                 fs::create_dir_all(object_path.parent().unwrap())?;
 
                 let object_url = format!(

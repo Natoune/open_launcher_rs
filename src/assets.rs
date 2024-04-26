@@ -6,14 +6,14 @@ use tokio::fs;
 
 impl Launcher {
     /// Install assets for the current version
-    pub async fn install_assets(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
+    pub async fn install_assets(&mut self) -> Result<(), Box<dyn Error + Send + Sync>> {
         if self.version.profile.is_null() {
             return Err(Box::from(LauncherError(
                 "Please install a version before installing assets".to_string(),
             )));
         }
 
-        println!("Checking assets");
+        self.emit_progress("checking_assets", "", 0, 0);
 
         let assets_dir = self.game_dir.join("assets");
         let indexes_dir = assets_dir.join("indexes");
@@ -28,8 +28,6 @@ impl Launcher {
         ));
 
         if !index_path.exists() {
-            println!("Downloading asset index");
-
             let index_url = self.version.profile["assetIndex"]["url"].as_str().unwrap();
             let index_data = reqwest::get(index_url).await?.text().await?;
             fs::write(&index_path, index_data).await?;
@@ -37,8 +35,6 @@ impl Launcher {
 
         let index: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(&index_path).await?)?;
-
-        let mut tasks = Vec::new();
 
         let mut readdir = fs::read_dir(&objects_dir).await?;
         while let Some(file) = readdir.next_entry().await? {
@@ -53,11 +49,14 @@ impl Launcher {
                     .any(|object| object["hash"].as_str().unwrap() == &hash)
                     || format!("{:x}", sha1::Sha1::digest(&fs::read(&path).await?)) != hash
                 {
-                    println!("Removing outdated asset {}", hash);
                     fs::remove_file(&path).await?;
                 }
             }
         }
+
+        let mut total: u64 = 0;
+        let mut current: u64 = 0;
+        let mut objects_to_download = vec![];
 
         for (name, object) in index["objects"].as_object().unwrap() {
             let object = object.as_object().unwrap();
@@ -66,34 +65,50 @@ impl Launcher {
             let object_path = objects_dir.join(&hash[..2]).join(&hash);
 
             if !object_path.exists() {
-                println!("Downloading assets/{}", name);
-
-                fs::create_dir_all(object_path.parent().unwrap()).await?;
-
-                let object_url = format!(
-                    "https://resources.download.minecraft.net/{}",
-                    hash[..2].to_string() + "/" + &hash
-                );
-                let download_task = async move {
-                    try_download_file(&object_url, &object_path, &hash, 3).await?;
-
-                    // Legacy assets
-                    if self.version.profile["assets"].as_str().unwrap() == "legacy"
-                        || self.version.profile["assets"].as_str().unwrap() == "pre-1.6"
-                    {
-                        let resources_path = self.game_dir.join("resources").join(name);
-                        fs::create_dir_all(resources_path.parent().unwrap()).await?;
-                        fs::copy(&object_path, &resources_path).await?;
-                    }
-
-                    Ok::<_, Box<dyn Error + Send + Sync>>(())
-                };
-                tasks.push(download_task);
+                total += object["size"].as_u64().unwrap();
+                objects_to_download.push({
+                    let mut object = object.clone();
+                    object.insert(
+                        "name".to_string(),
+                        serde_json::Value::String(name.to_string()),
+                    );
+                    object
+                });
             }
         }
 
-        for task in tasks {
-            task.await?;
+        if !objects_to_download.is_empty() {
+            self.emit_progress("downloading_assets", "", total, 0);
+        }
+
+        for object in objects_to_download {
+            let name = object["name"].as_str().unwrap();
+            let hash = object["hash"].as_str().unwrap().to_string();
+            let object_path = objects_dir.join(&hash[..2]).join(&hash);
+
+            fs::create_dir_all(object_path.parent().unwrap()).await?;
+
+            let object_url = format!(
+                "https://resources.download.minecraft.net/{}",
+                hash[..2].to_string() + "/" + &hash
+            );
+
+            try_download_file(&object_url, &object_path, &hash, 3).await?;
+
+            current += object["size"].as_u64().unwrap();
+            self.emit_progress("downloading_assets", name, total, current);
+
+            // Legacy assets
+            if self.version.profile["assets"].as_str().unwrap() == "legacy"
+                || self.version.profile["assets"].as_str().unwrap() == "pre-1.6"
+            {
+                let resources_path = self
+                    .game_dir
+                    .join("resources")
+                    .join(object["name"].as_str().unwrap());
+                fs::create_dir_all(resources_path.parent().unwrap()).await?;
+                fs::copy(&object_path, &resources_path).await?;
+            }
         }
 
         Ok(())

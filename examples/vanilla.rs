@@ -1,7 +1,8 @@
-use open_launcher::blocking::{auth, version, Launcher};
+use open_launcher::{auth, version, Launcher};
 use std::{env, path};
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let mut launcher = Launcher::new(
         path::Path::new(env::home_dir().unwrap().as_path())
             .join(".open_launcher")
@@ -19,29 +20,62 @@ fn main() {
             loader: None,
             loader_version: None,
         },
-    );
+    )
+    .await;
 
     launcher.auth(auth::OfflineAuth::new("Player"));
     launcher.custom_resolution(1280, 720);
     // launcher.fullscreen(true);
     // launcher.quick_play("multiplayer", "hypixel.net");
 
-    launcher.install_version().unwrap_or_else(|e| {
-        println!("An error occurred while installing the version: {}", e);
+    let mut progress = launcher.on_progress();
+    tokio::spawn(async move {
+        loop {
+            match progress.recv().await {
+                Ok(progress) => {
+                    println!(
+                        "Progress: {} {}/{} ({}%)",
+                        progress.task,
+                        progress.current,
+                        progress.total,
+                        match progress.total {
+                            0 => 0,
+                            _ => (progress.current as f64 / progress.total as f64 * 100.0 * 100.0)
+                                .round() as u64,
+                        } as f32
+                            / 100.0
+                    );
+                }
+                Err(_) => {
+                    println!("Progress channel closed");
+                    break;
+                }
+            }
+        }
     });
 
-    launcher.install_assets().unwrap_or_else(|e| {
-        println!("An error occurred while installing the assets: {}", e);
-    });
+    match launcher.install_version().await {
+        Ok(_) => println!("Version installed successfully."),
+        Err(e) => println!("An error occurred while installing the version: {}", e),
+    };
 
-    launcher.install_libraries().unwrap_or_else(|e| {
-        println!("An error occurred while installing the libraries: {}", e);
-    });
+    match launcher.install_assets().await {
+        Ok(_) => println!("Assets installed successfully."),
+        Err(e) => println!("An error occurred while installing the assets: {}", e),
+    };
 
-    let mut process = launcher.launch().unwrap_or_else(|e| {
-        println!("An error occurred while launching the game: {}", e);
-        std::process::exit(1);
-    });
+    match launcher.install_libraries().await {
+        Ok(_) => println!("Libraries installed successfully."),
+        Err(e) => println!("An error occurred while installing the libraries: {}", e),
+    };
+
+    let mut process = match launcher.launch() {
+        Ok(p) => p,
+        Err(e) => {
+            println!("An error occurred while launching the game: {}", e);
+            std::process::exit(1);
+        }
+    };
 
     let _ = process.wait();
 

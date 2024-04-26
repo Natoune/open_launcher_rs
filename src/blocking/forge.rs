@@ -239,7 +239,6 @@ pub(crate) fn post_process(
             command.arg(arg);
         }
 
-        println!("Running processor: {:?}", command);
         command.current_dir(game_dir);
         let mut process = command.spawn()?;
         process.wait()?;

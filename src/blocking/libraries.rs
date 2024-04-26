@@ -106,8 +106,6 @@ pub(crate) fn process_libs(
                 }
             }
 
-            println!("Downloading library {}", name);
-
             fs::create_dir_all(path.parent().unwrap())?;
 
             let url = format!("{}{}", base_url, get_lib_path(name));
@@ -154,8 +152,6 @@ fn process_natives(
         );
 
         if !path.exists() {
-            println!("Downloading natives {}", name);
-
             fs::create_dir_all(path.parent().unwrap())?;
 
             let url = natives["url"].as_str().unwrap();
@@ -233,8 +229,6 @@ impl Launcher {
             return Err("Please install a version before installing libraries".into());
         }
 
-        println!("Checking libraries");
-
         let libraries_dir = self.game_dir.join("libraries");
         let natives_dir = self.game_dir.join("natives");
 
@@ -301,7 +295,6 @@ impl Launcher {
                     return Err(e);
                 }
 
-                println!("Post processing forge");
                 forge::post_process(
                     &self.game_dir,
                     &self.java_executable,
@@ -316,8 +309,6 @@ impl Launcher {
                 }
             }
         }
-
-        println!("Checking natives");
 
         // Vanilla
         let mut error = None;

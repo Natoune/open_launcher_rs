@@ -1,4 +1,8 @@
-use crate::libraries::{get_lib_path, get_libraries_classpath};
+use crate::{
+    events,
+    libraries::{get_lib_path, get_libraries_classpath},
+};
+use async_process::Command;
 use serde_json::{Map, Value};
 use sha1::Digest;
 use std::{
@@ -7,6 +11,7 @@ use std::{
     io::{BufRead, Read},
     path::PathBuf,
 };
+use tokio::sync::broadcast;
 
 fn normalize_variable(val: &str, fields: &HashMap<String, String>) -> String {
     let mut val = val.to_string();
@@ -85,10 +90,11 @@ fn check_outputs(
     valid
 }
 
-pub(crate) fn post_process(
+pub(crate) async fn post_process(
     game_dir: &PathBuf,
     java_executable: &PathBuf,
     install_profile: &Value,
+    progress_sender: broadcast::Sender<events::Progress>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let data = install_profile["data"].as_object().unwrap();
     let processors = install_profile["processors"].as_array().unwrap();
@@ -167,6 +173,14 @@ pub(crate) fn post_process(
         return Ok(());
     }
 
+    let _ = progress_sender.send(events::Progress {
+        task: "post_processing".to_string(),
+        file: String::new(),
+        total: processors.len() as u64,
+        current: 0,
+    });
+
+    let mut i = 0;
     for proc in processors {
         let proc = proc.as_object().unwrap();
         let args = proc["args"].as_array().unwrap();
@@ -206,7 +220,7 @@ pub(crate) fn post_process(
         };
 
         // Run the processor
-        let mut command = std::process::Command::new(java_executable);
+        let mut command = Command::new(java_executable);
         command.arg("-cp");
         command.arg(get_libraries_classpath(game_dir, &classpath).join(
             match std::env::consts::OS {
@@ -214,7 +228,7 @@ pub(crate) fn post_process(
                 _ => ":",
             },
         ));
-        command.arg(main_class);
+        command.arg(main_class.clone());
 
         for arg in args {
             let arg = arg.as_str().unwrap();
@@ -239,11 +253,9 @@ pub(crate) fn post_process(
             command.arg(arg);
         }
 
-        println!("Running processor: {:?}", command);
         command.current_dir(game_dir);
         let mut process = command.spawn()?;
-        process.wait()?;
-        let status = process.wait()?;
+        let status = process.status().await?;
         if !status.success() {
             return Err("Processor failed".into());
         }
@@ -252,6 +264,14 @@ pub(crate) fn post_process(
         if !check_outputs(proc, game_dir, &fields) {
             return Err("Processor failed".into());
         }
+
+        i += 1;
+        let _ = progress_sender.send(events::Progress {
+            task: "post_processing".to_string(),
+            file: main_class,
+            total: processors.len() as u64,
+            current: i,
+        });
     }
 
     Ok(())

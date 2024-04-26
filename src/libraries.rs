@@ -1,11 +1,12 @@
-use crate::forge;
 use crate::utils::get_os;
-use crate::utils::{extract_all, try_download_file, LauncherError};
+use crate::utils::{extract_all, try_download_file};
 use crate::Launcher;
+use crate::{events, forge};
 use serde_json::Value;
 use std::error::Error;
 use std::path::Path;
 use tokio::fs;
+use tokio::sync::broadcast;
 
 pub(crate) fn get_lib_path(name: &str) -> String {
     let parts: Vec<&str> = name.split(':').collect();
@@ -36,17 +37,53 @@ pub(crate) fn get_lib_path(name: &str) -> String {
         + &format!("{}-{}{}.{}", artifact, version, classifier, extension)
 }
 
-pub(crate) async fn process_libs(
+pub(crate) fn allowed_rule(library: &Value) -> bool {
+    let mut allowed = false;
+
+    if let Some(rules) = library.get("rules") {
+        for rule in rules.as_array().unwrap() {
+            let rule = rule.as_object().unwrap();
+            let action = rule["action"].as_str().unwrap();
+            let os = rule.get("os");
+
+            if action == "allow" {
+                if os.is_none() {
+                    allowed = true;
+                } else {
+                    let os = os.unwrap().as_object().unwrap();
+                    let name = os.get("name").unwrap().as_str().unwrap();
+                    if name == get_os() {
+                        allowed = true;
+                    }
+                }
+            } else if action == "disallow" {
+                if os.is_none() {
+                    allowed = false;
+                } else {
+                    let os = os.unwrap().as_object().unwrap();
+                    let name = os.get("name").unwrap().as_str().unwrap();
+                    if name == get_os() {
+                        allowed = false;
+                    }
+                }
+            }
+        }
+
+        allowed
+    } else {
+        true
+    }
+}
+
+pub(crate) async fn sort_libs(
     libs: &Vec<Value>,
     libraries_dir: &Path,
     base_url: &str,
-) -> Result<(), Box<dyn Error + Send + Sync>> {
+) -> Result<Vec<Value>, Box<dyn Error + Send + Sync>> {
+    let mut libraries_vec = vec![];
+
     for library in libs {
-        let name = match library {
-            Value::Object(library) => library["name"].as_str().unwrap(),
-            Value::String(library) => library.as_str(),
-            _ => "",
-        };
+        let name = library["name"].as_str().unwrap();
         let base_url = match library {
             Value::Object(library) => match library.get("url") {
                 Some(url) => url.as_str().unwrap(),
@@ -70,58 +107,52 @@ pub(crate) async fn process_libs(
         };
 
         let path = libraries_dir.join(get_lib_path(name));
-        if !path.exists() {
-            if let Some(rules) = library.get("rules") {
-                let mut allowed = false;
-                for rule in rules.as_array().unwrap() {
-                    let rule = rule.as_object().unwrap();
-                    let action = rule["action"].as_str().unwrap();
-                    let os = rule.get("os");
 
-                    if action == "allow" {
-                        if os.is_none() {
-                            allowed = true;
-                        } else {
-                            let os = os.unwrap().as_object().unwrap();
-                            let name = os.get("name").unwrap().as_str().unwrap();
-                            if name == get_os() {
-                                allowed = true;
-                            }
-                        }
-                    } else if action == "disallow" {
-                        if os.is_none() {
-                            allowed = false;
-                        } else {
-                            let os = os.unwrap().as_object().unwrap();
-                            let name = os.get("name").unwrap().as_str().unwrap();
-                            if name == get_os() {
-                                allowed = false;
-                            }
-                        }
-                    }
-                }
-
-                if !allowed {
-                    continue;
-                }
-            }
-
-            println!("Downloading library {}", name);
-
-            fs::create_dir_all(path.parent().unwrap()).await?;
-
-            let url = format!("{}{}", base_url, get_lib_path(name));
-            try_download_file(&url, &path, hash, 3).await?;
+        if !path.exists() && allowed_rule(library) {
+            libraries_vec.push(serde_json::json!({
+                "name": name,
+                "url": format!("{}{}", base_url, get_lib_path(name)),
+                "hash": hash,
+                "path": path.to_str().unwrap(),
+            }));
         }
     }
 
-    Ok(())
+    Ok(libraries_vec)
 }
 
-async fn process_natives(
+pub(crate) async fn download_libs(
+    libs: &Vec<Value>,
+    progress: &mut events::Progress,
+    progress_sender: broadcast::Sender<events::Progress>,
+) -> Result<events::Progress, Box<dyn Error + Send + Sync>> {
+    for library in libs {
+        let name = library["name"].as_str().unwrap();
+        let url = library["url"].as_str().unwrap();
+        let hash = library["hash"].as_str().unwrap();
+        let path = Path::new(library["path"].as_str().unwrap());
+
+        fs::create_dir_all(path.parent().unwrap()).await?;
+        try_download_file(url, path, hash, 3).await?;
+
+        *progress = events::Progress {
+            task: "downloading_libraries".to_string(),
+            file: name.to_string(),
+            total: progress.total,
+            current: progress.current + 1,
+        };
+        let _ = progress_sender.send(progress.clone());
+    }
+
+    Ok(progress.clone())
+}
+
+/*async fn process_natives(
+    progress: &mut events::Progress,
+    progress_sender: broadcast::Sender<events::Progress>,
     natives: &Vec<Value>,
     natives_dir: &std::path::Path,
-) -> Result<(), Box<dyn Error + Send + Sync>> {
+) -> Result<events::Progress, Box<dyn Error + Send + Sync>> {
     for library in natives {
         let library = library.as_object().unwrap();
         let name = library["name"].as_str().unwrap();
@@ -154,19 +185,111 @@ async fn process_natives(
         );
 
         if !path.exists() {
-            println!("Downloading natives {}", name);
-
             fs::create_dir_all(path.parent().unwrap()).await?;
 
             let url = natives["url"].as_str().unwrap();
             try_download_file(url, &path, hash, 3).await?;
+
+            *progress = events::Progress {
+                task: "downloading_natives".to_string(),
+                file: name.to_string(),
+                total: progress.total,
+                current: progress.current + 1,
+            };
+            let _ = progress_sender.send(progress.clone());
 
             // Extract natives jar
             extract_all(&path, &natives_dir).await?;
         }
     }
 
-    Ok(())
+    Ok(progress.clone())
+}*/
+
+pub(crate) fn sort_natives(natives: &Vec<Value>, natives_dir: &std::path::Path) -> Vec<Value> {
+    let mut natives_vec = vec![];
+
+    for library in natives {
+        let library = library.as_object().unwrap();
+        let name = library["name"].as_str().unwrap();
+        let classifiers = library["downloads"].get("classifiers");
+
+        if classifiers.is_none() {
+            continue;
+        }
+
+        let classifiers = classifiers.unwrap().as_object().unwrap();
+        let natives = classifiers.get(&("natives-".to_string() + get_os().as_str()));
+
+        if natives.is_none() {
+            continue;
+        }
+
+        let natives = natives.unwrap().as_object().unwrap();
+        let hash = natives["sha1"].as_str().unwrap();
+        let parts: Vec<&str> = name.split(':').collect();
+        let artifact = parts[1];
+        let version = parts[2];
+        let path = natives_dir.join(
+            &format!(
+                "{}-{}-natives-{}.jar",
+                artifact,
+                version,
+                get_os().replace("windows", "win")
+            )
+            .replace("linux", "nix"),
+        );
+
+        if !path.exists() {
+            natives_vec.push(serde_json::json!({
+                "name": name,
+                "url": natives["url"].as_str().unwrap(),
+                "hash": hash,
+                "path": path.to_str().unwrap(),
+            }));
+        }
+    }
+
+    natives_vec
+}
+
+pub(crate) async fn extract_natives(
+    natives: &Vec<Value>,
+    natives_dir: &std::path::Path,
+    progress: &mut events::Progress,
+    progress_sender: broadcast::Sender<events::Progress>,
+) -> Result<events::Progress, Box<dyn Error + Send + Sync>> {
+    for library in natives {
+        let name = library["name"].as_str().unwrap();
+        let url = library["url"].as_str().unwrap();
+        let hash = library["hash"].as_str().unwrap();
+        let path = Path::new(library["path"].as_str().unwrap());
+
+        fs::create_dir_all(path.parent().unwrap()).await?;
+        try_download_file(url, path, hash, 3).await?;
+
+        // Extract natives jar
+        extract_all(&path, &natives_dir).await?;
+
+        // Remove natives jar
+        fs::remove_file(path).await?;
+
+        // Remove META-INF
+        let meta_inf = natives_dir.join("META-INF");
+        if meta_inf.exists() {
+            fs::remove_dir_all(meta_inf).await?;
+        }
+
+        *progress = events::Progress {
+            task: "extracting_natives".to_string(),
+            file: name.to_string(),
+            total: progress.total,
+            current: progress.current + 1,
+        };
+        let _ = progress_sender.send(progress.clone());
+    }
+
+    Ok(progress.clone())
 }
 
 pub(crate) fn get_libraries_classpath(
@@ -183,7 +306,10 @@ pub(crate) fn get_libraries_classpath(
         };
 
         let path = game_dir.join("libraries").join(get_lib_path(name));
-        if path.exists() && !classpath.contains(&path.to_str().unwrap().to_string()) {
+        if path.exists()
+            && !classpath.contains(&path.to_str().unwrap().to_string())
+            && allowed_rule(library)
+        {
             classpath.push(path.to_str().unwrap().to_string());
         }
     }
@@ -193,36 +319,27 @@ pub(crate) fn get_libraries_classpath(
 
 impl Launcher {
     /// Install libraries for the current version
-    pub async fn install_libraries(&self) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn install_libraries(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         if self.version.profile.is_null() {
             return Err("Please install a version before installing libraries".into());
         }
 
-        println!("Checking libraries");
+        self.emit_progress("checking_libraries", "", 0, 0);
 
         let libraries_dir = self.game_dir.join("libraries");
         let natives_dir = self.game_dir.join("natives");
 
-        // Vanilla
-        let mut error = None;
-        process_libs(
+        /* LIBRARIES */
+        // Get libraries
+        let vanilla_libs = sort_libs(
             &self.version.profile["libraries"].as_array().unwrap(),
             &libraries_dir,
             "https://libraries.minecraft.net/",
         )
         .await
-        .unwrap_or_else(|e| {
-            error = Some(e);
-        });
-
-        if let Some(e) = error {
-            return Err(e);
-        }
-
-        // Modded libraries
-        if self.version.modded_profile.is_object() {
-            let mut error = None;
-            process_libs(
+        .unwrap();
+        let modded_libs = if self.version.modded_profile.is_object() {
+            sort_libs(
                 &self.version.modded_profile["libraries"].as_array().unwrap(),
                 &libraries_dir,
                 if self.version.forge.enabled {
@@ -238,6 +355,74 @@ impl Launcher {
                 },
             )
             .await
+            .unwrap()
+        } else {
+            vec![]
+        };
+        let post_processing_libs = if (self.version.forge.enabled && !self.version.forge.legacy)
+            || self.version.neoforge.enabled
+        {
+            sort_libs(
+                &self.version.forge.install_profile["libraries"]
+                    .as_array()
+                    .unwrap(),
+                &libraries_dir,
+                if self.version.forge.enabled {
+                    "https://maven.creeperhost.net/"
+                } else {
+                    "https://maven.neoforged.net/releases/"
+                },
+            )
+            .await
+            .unwrap()
+        } else {
+            vec![]
+        };
+
+        let mut libs = vanilla_libs.clone();
+        for lib in modded_libs {
+            if !libs.contains(&lib) {
+                libs.push(lib);
+            }
+        }
+        for lib in post_processing_libs {
+            if !libs.contains(&lib) {
+                libs.push(lib);
+            }
+        }
+
+        // Downloading libraries
+        self.emit_progress("downloading_libraries", "", libs.len() as u64, 0);
+
+        let mut error = None;
+        self.progress = download_libs(
+            &libs,
+            &mut self.progress.clone(),
+            self.progress_sender.clone(),
+        )
+        .await
+        .unwrap_or_else(|e| {
+            error = Some(e);
+            self.progress.clone()
+        });
+
+        if let Some(e) = error {
+            return Err(e);
+        }
+
+        /* FORGE POST PROCESSING */
+        if (self.version.forge.enabled && !self.version.forge.legacy)
+            || self.version.neoforge.enabled
+        {
+            let mut error = None;
+
+            forge::post_process(
+                &self.game_dir,
+                &self.java_executable,
+                &self.version.forge.install_profile,
+                self.progress_sender.clone(),
+            )
+            .await
             .unwrap_or_else(|e| {
                 error = Some(e);
             });
@@ -245,57 +430,44 @@ impl Launcher {
             if let Some(e) = error {
                 return Err(e);
             }
+        }
 
-            if (self.version.forge.enabled && !self.version.forge.legacy)
-                || self.version.neoforge.enabled
-            {
-                process_libs(
-                    &self.version.forge.install_profile["libraries"]
-                        .as_array()
-                        .unwrap(),
-                    &libraries_dir,
-                    if self.version.forge.enabled {
-                        "https://maven.creeperhost.net/"
-                    } else {
-                        "https://maven.neoforged.net/releases/"
-                    },
-                )
-                .await
-                .unwrap_or_else(|e| {
-                    error = Some(Box::from(LauncherError(e.to_string())));
-                });
+        /* NATIVES */
+        // Get natives
+        let vanilla_natives = sort_natives(
+            &self.version.profile["libraries"].as_array().unwrap(),
+            &natives_dir,
+        );
+        let modded_natives = if self.version.modded_profile.is_object() {
+            sort_natives(
+                &self.version.modded_profile["libraries"].as_array().unwrap(),
+                &natives_dir,
+            )
+        } else {
+            vec![]
+        };
 
-                if let Some(e) = error {
-                    return Err(e);
-                }
-
-                println!("Post processing forge");
-                forge::post_process(
-                    &self.game_dir,
-                    &self.java_executable,
-                    &self.version.forge.install_profile,
-                )
-                .unwrap_or_else(|e| {
-                    error = Some(Box::from(LauncherError(e.to_string())));
-                });
-
-                if let Some(e) = error {
-                    return Err(e);
-                }
+        let mut natives = vanilla_natives.clone();
+        for native in modded_natives {
+            if !natives.contains(&native) {
+                natives.push(native);
             }
         }
 
-        println!("Checking natives");
+        self.emit_progress("checking_natives", "", natives.len() as u64, 0);
 
-        // Vanilla
+        // Download natives
         let mut error = None;
-        process_natives(
-            &self.version.profile["libraries"].as_array().unwrap(),
+        self.progress = extract_natives(
+            &natives,
             &natives_dir,
+            &mut self.progress.clone(),
+            self.progress_sender.clone(),
         )
         .await
         .unwrap_or_else(|e| {
             error = Some(e);
+            self.progress.clone()
         });
 
         if let Some(e) = error {

@@ -334,8 +334,6 @@ impl Launcher {
             return Err("Please install a version before launching".into());
         }
 
-        println!("Launching Minecraft version {}", self.version.id);
-
         let mut args = self.args.clone();
 
         let classpath_separator = match std::env::consts::OS {
@@ -632,9 +630,6 @@ impl Launcher {
     /// * `Result<Child, Box<dyn std::error::Error>>` - The child process of the game.
     pub fn launch(&mut self) -> Result<Child, Box<dyn std::error::Error>> {
         let mut command: Command = self.command()?;
-
-        println!("Running command: {:?}", command);
-
         Ok(command.spawn().unwrap())
     }
 }
