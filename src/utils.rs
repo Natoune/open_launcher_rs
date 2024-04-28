@@ -1,4 +1,5 @@
 use async_recursion::async_recursion;
+use serde_json::Value;
 use sha1::Digest;
 use std::error::Error;
 use tokio::fs;
@@ -116,14 +117,26 @@ pub(crate) async fn extract_file(
 pub(crate) async fn extract_all(
     zip_path: &std::path::Path,
     extract_path: &std::path::Path,
-) -> Result<(), Box<dyn Error + Send + Sync>> {
+) -> Result<Vec<Value>, Box<dyn Error + Send + Sync>> {
     let archive = async_zip::tokio::read::fs::ZipFileReader::new(zip_path).await?;
+    let mut extracted = vec![];
 
     for i in 0..archive.file().entries().len() {
         let entry = archive.file().entries().get(i).unwrap();
         let path = extract_path.join(entry.filename().as_str()?);
 
         if path.exists() {
+            extracted.push(serde_json::json!({
+                "path": path,
+                "hash": format!("{:x}", sha1::Sha1::digest(&fs::read(&path).await?)),
+            }));
+            continue;
+        }
+
+        if entry.filename().as_str()?.ends_with(".git")
+            || entry.filename().as_str()?.ends_with(".sha1")
+            || entry.filename().as_str()?.starts_with("META-INF")
+        {
             continue;
         }
 
@@ -142,8 +155,13 @@ pub(crate) async fn extract_all(
                 .await?;
 
             futures_lite::io::copy(&mut reader, &mut writer.compat_write()).await?;
+
+            extracted.push(serde_json::json!({
+                "path": path,
+                "hash": format!("{:x}", sha1::Sha1::digest(&fs::read(&path).await?)),
+            }));
         }
     }
 
-    Ok(())
+    Ok(extracted)
 }

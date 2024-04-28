@@ -22,6 +22,8 @@ impl Launcher {
         fs::create_dir_all(&indexes_dir).await?;
         fs::create_dir_all(&objects_dir).await?;
 
+        self.fix_log4j_vulnerability().await?;
+
         let index_path = indexes_dir.join(&format!(
             "{}.json",
             self.version.profile["assets"].as_str().unwrap()
@@ -108,6 +110,55 @@ impl Launcher {
                     .join(object["name"].as_str().unwrap());
                 fs::create_dir_all(resources_path.parent().unwrap()).await?;
                 fs::copy(&object_path, &resources_path).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn fix_log4j_vulnerability(&mut self) -> Result<(), Box<dyn Error + Send + Sync>> {
+        // Fix log4j vulnerability
+        if self.version.profile["logging"].is_object()
+            && self.version.profile["logging"]["client"].is_object()
+        {
+            if (self.version.id.split('.').collect::<Vec<&str>>()[1] == "18"
+                && self.version.id.split('.').collect::<Vec<&str>>().len() == 3)
+                || self.version.id.split('.').collect::<Vec<&str>>()[1]
+                    .parse::<u32>()
+                    .unwrap()
+                    > 18
+            {
+                return Ok(());
+            }
+
+            let log4j_path = self.game_dir.join("assets").join("log_configs").join(
+                self.version.profile["logging"]["client"]["file"]["id"]
+                    .as_str()
+                    .unwrap(),
+            );
+
+            if !log4j_path.exists() {
+                let log4j_url = self.version.profile["logging"]["client"]["file"]["url"]
+                    .as_str()
+                    .unwrap()
+                    .to_string();
+                let log4j = reqwest::get(&log4j_url).await?.bytes().await?;
+                fs::create_dir_all(log4j_path.parent().unwrap()).await?;
+                fs::write(&log4j_path, log4j).await?;
+            }
+
+            let log4j_arg = self.version.profile["logging"]["client"]["argument"]
+                .as_str()
+                .unwrap()
+                .replace("${path}", log4j_path.to_str().unwrap());
+            self.args.push(log4j_arg);
+
+            if self.version.id.split('.').collect::<Vec<&str>>()[1] == "18"
+                && self.version.id.split('.').collect::<Vec<&str>>().len() == 2
+                || self.version.id.split('.').collect::<Vec<&str>>()[1] == "17"
+            {
+                self.args
+                    .push("-Dlog4j2.formatMsgNoLookups=true".to_string());
             }
         }
 

@@ -40,7 +40,6 @@ pub(crate) struct QuiltVersion {
 
 pub(crate) struct InternalVersion {
     pub id: String,
-    pub loader: String,
     pub loader_version: String,
     pub profile: serde_json::Value,
     pub modded_profile: serde_json::Value,
@@ -149,7 +148,6 @@ impl InternalVersion {
         InternalVersion {
             id: id.clone(),
             profile: profile_json,
-            loader: loader.clone(),
             loader_version: loader_version.clone(),
             modded_profile: modded_profile_json,
             forge: ForgeVersion {
@@ -220,7 +218,6 @@ impl Launcher {
         fs::create_dir_all(self.game_dir.join("versions").join(&self.version.id)).await?;
 
         let _ = self.download_version().await;
-        let _ = self.fix_log4j_vulnerability().await;
         let _ = self.install_modded_versions().await;
 
         Ok(())
@@ -270,44 +267,6 @@ impl Launcher {
                 .to_string();
             let version_jar = reqwest::get(&version_jar_url).await?.bytes().await?;
             fs::write(&version_jar_path, version_jar).await?;
-        }
-
-        Ok(())
-    }
-
-    async fn fix_log4j_vulnerability(&mut self) -> Result<(), Box<dyn Error + Send + Sync>> {
-        // Fix log4j vulnerability
-        if self.version.profile["logging"].is_object()
-            && self.version.profile["logging"]["client"].is_object()
-        {
-            let log4j_path = self.game_dir.join(
-                self.version.profile["logging"]["client"]["file"]["id"]
-                    .as_str()
-                    .unwrap(),
-            );
-
-            if !log4j_path.exists() {
-                let log4j_url = self.version.profile["logging"]["client"]["file"]["url"]
-                    .as_str()
-                    .unwrap()
-                    .to_string();
-                let log4j = reqwest::get(&log4j_url).await?.bytes().await?;
-                fs::write(&log4j_path, log4j).await?;
-            }
-
-            let log4j_arg = self.version.profile["logging"]["client"]["argument"]
-                .as_str()
-                .unwrap()
-                .replace("${path}", log4j_path.to_str().unwrap());
-            self.args.push(log4j_arg);
-
-            if self.version.id.split('.').collect::<Vec<&str>>()[1] == "18"
-                && self.version.id.split('.').collect::<Vec<&str>>().len() == 2
-                || self.version.id.split('.').collect::<Vec<&str>>()[1] == "17"
-            {
-                self.args
-                    .push("-Dlog4j2.formatMsgNoLookups=true".to_string());
-            }
         }
 
         Ok(())

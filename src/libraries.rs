@@ -3,6 +3,7 @@ use crate::utils::{extract_all, try_download_file};
 use crate::Launcher;
 use crate::{events, forge};
 use serde_json::Value;
+use sha1::Digest;
 use std::error::Error;
 use std::path::Path;
 use tokio::fs;
@@ -162,7 +163,10 @@ pub(crate) async fn download_libs(
     Ok(progress.clone())
 }
 
-pub(crate) fn sort_natives(natives: &Vec<Value>, natives_dir: &std::path::Path) -> Vec<Value> {
+pub(crate) async fn sort_natives(
+    natives: &Vec<Value>,
+    natives_dir: &std::path::Path,
+) -> Vec<Value> {
     let mut natives_vec = vec![];
 
     for library in natives {
@@ -196,14 +200,47 @@ pub(crate) fn sort_natives(natives: &Vec<Value>, natives_dir: &std::path::Path) 
             .replace("linux", "nix"),
         );
 
-        if !path.exists() {
-            natives_vec.push(serde_json::json!({
-                "name": name,
-                "url": natives["url"].as_str().unwrap(),
-                "hash": hash,
-                "path": path.to_str().unwrap(),
-            }));
+        let natives_json = natives_dir.join("natives.json");
+        if natives_json.exists() {
+            let mut ok = true;
+
+            let natives_json_content = fs::read_to_string(natives_json).await.unwrap();
+            let natives_json_content: serde_json::Value =
+                serde_json::from_str(&natives_json_content).expect("Failed to parse natives.json");
+
+            if natives_json_content[name].is_array() {
+                let extracted = natives_json_content[name].as_array().unwrap();
+                for native in extracted {
+                    let native: &serde_json::Map<String, Value> = native.as_object().unwrap();
+                    if native["hash"].as_str().unwrap()
+                        != format!(
+                            "{:x}",
+                            sha1::Sha1::digest(
+                                &fs::read(native["path"].as_str().unwrap_or_else(|| ""))
+                                    .await
+                                    .unwrap()
+                            )
+                        )
+                    {
+                        ok = false;
+                        fs::remove_file(Path::new(native["path"].as_str().unwrap()))
+                            .await
+                            .unwrap();
+                    }
+                }
+
+                if ok {
+                    continue;
+                }
+            }
         }
+
+        natives_vec.push(serde_json::json!({
+            "name": name,
+            "url": natives["url"].as_str().unwrap(),
+            "hash": hash,
+            "path": path.to_str().unwrap(),
+        }));
     }
 
     natives_vec
@@ -215,6 +252,14 @@ pub(crate) async fn extract_natives(
     progress: &mut events::Progress,
     progress_sender: broadcast::Sender<events::Progress>,
 ) -> Result<events::Progress, Box<dyn Error + Send + Sync>> {
+    let natives_json = natives_dir.join("natives.json");
+    let mut natives_json_content = if natives_json.clone().exists() {
+        let natives_json_content = fs::read_to_string(&natives_json).await.unwrap();
+        serde_json::from_str(&natives_json_content).unwrap_or_else(|_| serde_json::Map::new())
+    } else {
+        serde_json::Map::new()
+    };
+
     for library in natives {
         let name = library["name"].as_str().unwrap();
         let url = library["url"].as_str().unwrap();
@@ -225,16 +270,13 @@ pub(crate) async fn extract_natives(
         try_download_file(url, path, hash, 3).await?;
 
         // Extract natives jar
-        extract_all(&path, &natives_dir).await?;
+        let extracted = extract_all(&path, &natives_dir).await?;
 
         // Remove natives jar
         fs::remove_file(path).await?;
 
-        // Remove META-INF
-        let meta_inf = natives_dir.join("META-INF");
-        if meta_inf.exists() {
-            fs::remove_dir_all(meta_inf).await?;
-        }
+        // Add native to natives.json
+        natives_json_content.insert(name.to_string(), serde_json::Value::Array(extracted));
 
         *progress = events::Progress {
             task: "extracting_natives".to_string(),
@@ -244,6 +286,13 @@ pub(crate) async fn extract_natives(
         };
         let _ = progress_sender.send(progress.clone());
     }
+
+    fs::write(
+        natives_json,
+        serde_json::Value::Object(natives_json_content).to_string(),
+    )
+    .await
+    .unwrap();
 
     Ok(progress.clone())
 }
@@ -283,7 +332,10 @@ impl Launcher {
         self.emit_progress("checking_libraries", "", 0, 0);
 
         let libraries_dir = self.game_dir.join("libraries");
-        let natives_dir = self.game_dir.join("natives");
+        let natives_dir = self
+            .game_dir
+            .join("versions")
+            .join(format!("{}-natives", &self.version.id));
 
         /* LIBRARIES */
         // Get libraries
@@ -393,12 +445,14 @@ impl Launcher {
         let vanilla_natives = sort_natives(
             &self.version.profile["libraries"].as_array().unwrap(),
             &natives_dir,
-        );
+        )
+        .await;
         let modded_natives = if self.version.modded_profile.is_object() {
             sort_natives(
                 &self.version.modded_profile["libraries"].as_array().unwrap(),
                 &natives_dir,
             )
+            .await
         } else {
             vec![]
         };

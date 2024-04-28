@@ -7,9 +7,6 @@ use std::{
 
 use tokio::{fs, sync::broadcast};
 
-#[cfg(feature = "blocking")]
-pub mod blocking;
-
 pub mod auth;
 pub mod version;
 
@@ -529,7 +526,12 @@ impl Launcher {
             {
                 self.game_dir.to_str().unwrap().to_string()
             } else {
-                self.game_dir.join("natives").to_str().unwrap().to_string()
+                self.game_dir
+                    .join("versions")
+                    .join(format!("{}-natives", self.version.id))
+                    .to_str()
+                    .unwrap()
+                    .to_string()
             },
         );
         fields.insert(
