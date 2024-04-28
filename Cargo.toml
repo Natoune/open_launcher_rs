@@ -1,6 +1,6 @@
 [package]
 name = "open_launcher"
-version = "1.5.2"
+version = "1.5.3"
 edition = "2021"
 authors = ["Natan Chiodi <contact@natanchiodi.fr>"]
 description = "Open Launcher is a package to install and launch modded and vanilla Minecraft instances totally automatically with Rust."
