@@ -252,6 +252,10 @@ pub(crate) async fn extract_natives(
     progress: &mut events::Progress,
     progress_sender: broadcast::Sender<events::Progress>,
 ) -> Result<events::Progress, Box<dyn Error + Send + Sync>> {
+    if natives.is_empty() {
+        return Ok(progress.clone());
+    }
+
     let natives_json = natives_dir.join("natives.json");
     let mut natives_json_content = if natives_json.clone().exists() {
         let natives_json_content = fs::read_to_string(&natives_json).await.unwrap();
@@ -287,6 +291,7 @@ pub(crate) async fn extract_natives(
         let _ = progress_sender.send(progress.clone());
     }
 
+    fs::create_dir_all(natives_dir).await?;
     fs::write(
         natives_json,
         serde_json::Value::Object(natives_json_content).to_string(),
