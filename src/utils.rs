@@ -38,6 +38,8 @@ pub(crate) async fn try_download_file(
 
     let mut file = fs::File::create(path).await?;
     file.write_all(&data).await?;
+    file.sync_all().await?;
+    file.flush().await?;
 
     if hash.len() != 40 {
         return Ok(());
