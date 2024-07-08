@@ -172,6 +172,11 @@ pub(crate) async fn sort_natives(
     for library in natives {
         let library = library.as_object().unwrap();
         let name = library["name"].as_str().unwrap();
+
+        if library.get("downloads").is_none() {
+            continue;
+        }
+
         let classifiers = library["downloads"].get("classifiers");
 
         if classifiers.is_none() {
